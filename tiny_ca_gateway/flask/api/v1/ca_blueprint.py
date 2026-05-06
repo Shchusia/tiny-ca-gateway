@@ -176,7 +176,8 @@ async def crl_route() -> Response | tuple[Response, int]:
 # ===========================================================================
 
 
-@ca_bp.get(Routes.GET_LIST_CERTS)
+@ca_bp.get(Routes.GET_LIST_CERTS, strict_slashes=False)
+@ca_bp.get("/", strict_slashes=False)
 @_async
 async def list_certificates() -> Response | tuple[Response, int]:
     _verify_token()
@@ -218,7 +219,10 @@ async def get_expiring() -> Response | tuple[Response, int]:
 async def create_root_ca() -> Response | tuple[Response, int]:
     _verify_token()
     lm = FlaskCAManager()
-    payload = CAConfig.model_validate(request.get_json())
+    try:
+        payload = CAConfig.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     try:
         await lm.rebuild_root_ca_pair(ca_config=payload)
     except Exception as exc:
@@ -245,7 +249,10 @@ async def create_root_ca() -> Response | tuple[Response, int]:
 async def issue_intermediate_ca() -> Response | tuple[Response, int]:
     _verify_token()
     mgr = _require_factory()
-    payload = IntermediateCARequest.model_validate(request.get_json())
+    try:
+        payload = IntermediateCARequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
         cert, _ = await mgr.issue_intermediate_ca(
@@ -275,14 +282,31 @@ async def issue_intermediate_ca() -> Response | tuple[Response, int]:
 async def issue_certificate() -> Response | tuple[Response, int]:
     _verify_token()
     mgr = _require_factory()
-    payload = IssueCertRequest.model_validate(request.get_json())
+    try:
+        payload = IssueCertRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
+        # ВАЖНО: Валидация key_size ПЕРЕД issue_certificate
+        if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
+            return (
+                jsonify(
+                    detail=f"Invalid key_size: {payload.key_size}. Must be 2048-4096."
+                ),
+                400,
+            )
+
         cert, _, _ = await mgr.issue_certificate(
             config=build_client_config(payload),
             uuid_str=_uuid,
             is_overwrite=payload.is_overwrite,
         )
+    except ValueError as exc:
+        # Ловим ошибки валидации от tiny_ca
+        if "key" in str(exc).lower():
+            return jsonify(detail=str(exc)), 400
+        return jsonify(detail=str(exc)), 409
     except Exception as exc:
         return jsonify(detail=str(exc)), 409
     return _json(
@@ -324,7 +348,10 @@ async def refresh_crl() -> Response | tuple[Response, int]:
 @_async
 async def verify_crl() -> Response | tuple[Response, int]:
     _verify_token()
-    payload = CRLVerifyRequest.model_validate(request.get_json())
+    try:
+        payload = CRLVerifyRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     crl = _load_pem_crl(payload.pem)
     try:
         await _require_factory().verify_crl(crl=crl)
@@ -342,9 +369,24 @@ async def verify_crl() -> Response | tuple[Response, int]:
 @_async
 async def verify_certificate() -> Response | tuple[Response, int]:
     _verify_token()
-    cert = _load_pem_cert(VerifyRequest.model_validate(request.get_json()).pem)
     try:
-        await _require_factory().verify_certificate(cert=cert)
+        payload = VerifyRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
+    cert = _load_pem_cert(payload.pem)
+    try:
+        # ВАЖНО: verify_certificate может вернуть False вместо исключения
+        result = await _require_factory().verify_certificate(cert=cert)
+        # Если результат — это кортеж (valid, reason), обработать
+        if isinstance(result, tuple):
+            valid, reason = result
+            if valid:
+                return _json({"valid": True})
+            else:
+                return _json(
+                    {"valid": False, "detail": reason or "Verification failed"}
+                )
+        # Если просто исключение не выброшено — сертификат валиден
         return _json({"valid": True})
     except Exception as exc:
         return _json({"valid": False, "detail": str(exc)})
@@ -354,7 +396,10 @@ async def verify_certificate() -> Response | tuple[Response, int]:
 @_async
 async def cosign_certificate() -> Response | tuple[Response, int]:
     _verify_token()
-    payload = CosignRequest.model_validate(request.get_json())
+    try:
+        payload = CosignRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     cert = _load_pem_cert(payload.pem)
     try:
         cosigned = await _require_factory().cosign_certificate(
@@ -379,7 +424,10 @@ async def cosign_certificate() -> Response | tuple[Response, int]:
 async def export_pkcs12(serial: int) -> Response | tuple[Response, int]:
     _verify_token()
     mgr = _require_factory()
-    payload = ExportP12Request.model_validate(request.get_json() or {})
+    try:
+        payload = ExportP12Request.model_validate(request.get_json() or {})
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     record = await mgr._db.get_by_serial(serial=serial)
     if not record:
         return jsonify(detail=f"Certificate serial={serial} not found"), 404
@@ -410,7 +458,10 @@ async def export_pkcs12(serial: int) -> Response | tuple[Response, int]:
 @_async
 async def revoke_certificate() -> Response | tuple[Response, int]:
     _verify_token()
-    payload = RevokeRequest.model_validate(request.get_json())
+    try:
+        payload = RevokeRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     reason = REASON_MAP.get(payload.reason, x509.ReasonFlags.unspecified)
     ok = await _require_factory().revoke_certificate(
         serial=payload.serial_number, reason=reason
@@ -427,7 +478,10 @@ async def revoke_certificate() -> Response | tuple[Response, int]:
 @_async
 async def rotate_certificate(serial: int) -> Response | tuple[Response, int]:
     _verify_token()
-    payload = IssueCertRequest.model_validate(request.get_json())
+    try:
+        payload = IssueCertRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
         new_cert, _, _ = await _require_factory().rotate_certificate(
@@ -450,7 +504,10 @@ async def rotate_certificate(serial: int) -> Response | tuple[Response, int]:
 @_async
 async def renew_certificate(serial: int) -> Response | tuple[Response, int]:
     _verify_token()
-    payload = RenewRequest.model_validate(request.get_json())
+    try:
+        payload = RenewRequest.model_validate(request.get_json())
+    except Exception as exc:
+        return jsonify(detail=str(exc)), 422
     try:
         renewed = await _require_factory().renew_certificate(
             serial=serial, days_valid=payload.days_valid
@@ -524,7 +581,7 @@ async def get_cert_chain(serial: int) -> Response | tuple[Response, int]:
 # ===========================================================================
 
 
-@ca_bp.get(Routes.DOWNLOAD_STREAM)
+@ca_bp.get("/stream/<string:uuid_certificate>")
 @_async
 async def stream_artifact(uuid_certificate: str) -> Response | tuple[Response, int]:
     _verify_token()
@@ -559,7 +616,7 @@ async def stream_artifact(uuid_certificate: str) -> Response | tuple[Response, i
     )
 
 
-@ca_bp.get(Routes.DOWNLOAD)
+@ca_bp.get("/<string:uuid_certificate>")
 @_async
 async def download_artifact(uuid_certificate: str) -> Response | tuple[Response, int]:
     _verify_token()

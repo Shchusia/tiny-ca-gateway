@@ -162,6 +162,12 @@ async def crl_route(request: HttpRequest, pem: bool = False) -> HttpResponse:
 
 
 @ca_router.get(
+    "/",
+    response=list[CertListItem],
+    auth=token_auth,
+    summary=RoutesSummary.GET_LIST_CERTS,
+)
+@ca_router.get(
     Routes.GET_LIST_CERTS,
     summary=RoutesSummary.GET_LIST_CERTS,
     response=list[CertListItem],
@@ -276,11 +282,24 @@ async def issue_certificate(
     mgr = _require_factory()
     _uuid = str(_uuid_module.uuid4())
     try:
+        # ВАЖНО: Валидация key_size ПЕРЕД issue_certificate
+        if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
+            raise HttpError(
+                400, f"Invalid key_size: {payload.key_size}. Must be 2048-4096."
+            )
+
         cert, _, _ = await mgr.issue_certificate(
             config=build_client_config(payload),
             uuid_str=_uuid,
             is_overwrite=payload.is_overwrite,
         )
+    except HttpError:
+        raise
+    except ValueError as exc:
+        # Ловим ошибки валидации от tiny_ca
+        if "key" in str(exc).lower():
+            raise HttpError(400, str(exc)) from exc
+        raise HttpError(409, str(exc)) from exc
     except Exception as exc:
         raise HttpError(409, str(exc)) from exc
     return IssueCertResponse(
@@ -347,7 +366,18 @@ async def verify_certificate(
 ) -> VerifyResponse:
     cert = _load_pem_cert(payload.pem)
     try:
-        await _require_factory().verify_certificate(cert=cert)
+        # ВАЖНО: verify_certificate может вернуть False вместо исключения
+        result = await _require_factory().verify_certificate(cert=cert)
+        # Если результат — это кортеж (valid, reason), обработать
+        if isinstance(result, tuple):
+            valid, reason = result
+            if valid:
+                return VerifyResponse(valid=True)
+            else:
+                return VerifyResponse(
+                    valid=False, detail=reason or "Verification failed"
+                )
+        # Если просто исключение не выброшено — сертификат валиден
         return VerifyResponse(valid=True)
     except Exception as exc:
         return VerifyResponse(valid=False, detail=str(exc))
@@ -559,7 +589,9 @@ async def stream_artefact(
     )
 
 
-@ca_router.get(Routes.DOWNLOAD, auth=token_auth, summary=RoutesSummary.DOWNLOAD)
+@ca_router.get(
+    "/artifact/{uuid_certificate}", auth=token_auth, summary=RoutesSummary.DOWNLOAD
+)
 async def download_artefact(
     request: HttpRequest, uuid_certificate: str, object_type: ArtifactType = "pem"
 ) -> HttpResponse:
