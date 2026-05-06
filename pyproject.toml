@@ -68,7 +68,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/Shchusia/tiny-ca-gateway"
-Documentation = "https://github.com/Shchusia/tiny-ca-gateway#readme"
+Documentation = "https://github.com/Shchusia/tiny-ca-gateway/blob/master/README.md"
 "Bug Tracker" = "https://github.com/Shchusia/tiny-ca-gateway/issues"
 Changelog = "https://github.com/Shchusia/tiny-ca-gateway/blob/master/CHANGELOG.md"
 

@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 Denys (Shchusia)
+Copyright (c) 2026 Denis Shchutskyi (Shchusia)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@ SOFTWARE.
 
 ## Dependency Notice
 
-This package is built on top of **tiny-ca** by Denys (Shchusia),
+This package is built on top of **tiny-ca** by Denis Shchutskyi (Shchusia),
 also distributed under the MIT License.
 See: https://github.com/Shchusia/tiny_ca
 
