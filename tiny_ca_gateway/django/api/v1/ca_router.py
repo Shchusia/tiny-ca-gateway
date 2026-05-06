@@ -66,14 +66,6 @@ ca_router = Router(tags=["ca"])
 
 
 class TokenAuth(HttpBearer):
-    """
-    Bearer token auth.
-
-    HttpBearer вызывает authenticate() только когда заголовок Authorization
-    ПРИСУТСТВУЕТ. Если заголовка нет — Ninja сам возвращает 401 до нашего кода.
-    Переопределяем __call__: если auth выключен — пропускаем всё.
-    """
-
     def __call__(self, request: HttpRequest) -> Any:
         if not auth_enabled():
             return "open"
@@ -282,7 +274,6 @@ async def issue_certificate(
     mgr = _require_factory()
     _uuid = str(_uuid_module.uuid4())
     try:
-        # ВАЖНО: Валидация key_size ПЕРЕД issue_certificate
         if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
             raise HttpError(
                 400, f"Invalid key_size: {payload.key_size}. Must be 2048-4096."
@@ -296,7 +287,6 @@ async def issue_certificate(
     except HttpError:
         raise
     except ValueError as exc:
-        # Ловим ошибки валидации от tiny_ca
         if "key" in str(exc).lower():
             raise HttpError(400, str(exc)) from exc
         raise HttpError(409, str(exc)) from exc
@@ -366,9 +356,7 @@ async def verify_certificate(
 ) -> VerifyResponse:
     cert = _load_pem_cert(payload.pem)
     try:
-        # ВАЖНО: verify_certificate может вернуть False вместо исключения
         result = await _require_factory().verify_certificate(cert=cert)
-        # Если результат — это кортеж (valid, reason), обработать
         if isinstance(result, tuple):
             valid, reason = result
             if valid:
@@ -377,7 +365,6 @@ async def verify_certificate(
                 return VerifyResponse(
                     valid=False, detail=reason or "Verification failed"
                 )
-        # Если просто исключение не выброшено — сертификат валиден
         return VerifyResponse(valid=True)
     except Exception as exc:
         return VerifyResponse(valid=False, detail=str(exc))

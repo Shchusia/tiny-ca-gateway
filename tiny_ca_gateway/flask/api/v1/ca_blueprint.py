@@ -288,7 +288,6 @@ async def issue_certificate() -> Response | tuple[Response, int]:
         return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
-        # ВАЖНО: Валидация key_size ПЕРЕД issue_certificate
         if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
             return (
                 jsonify(
@@ -303,7 +302,6 @@ async def issue_certificate() -> Response | tuple[Response, int]:
             is_overwrite=payload.is_overwrite,
         )
     except ValueError as exc:
-        # Ловим ошибки валидации от tiny_ca
         if "key" in str(exc).lower():
             return jsonify(detail=str(exc)), 400
         return jsonify(detail=str(exc)), 409
@@ -375,9 +373,7 @@ async def verify_certificate() -> Response | tuple[Response, int]:
         return jsonify(detail=str(exc)), 422
     cert = _load_pem_cert(payload.pem)
     try:
-        # ВАЖНО: verify_certificate может вернуть False вместо исключения
         result = await _require_factory().verify_certificate(cert=cert)
-        # Если результат — это кортеж (valid, reason), обработать
         if isinstance(result, tuple):
             valid, reason = result
             if valid:
@@ -386,7 +382,7 @@ async def verify_certificate() -> Response | tuple[Response, int]:
                 return _json(
                     {"valid": False, "detail": reason or "Verification failed"}
                 )
-        # Если просто исключение не выброшено — сертификат валиден
+
         return _json({"valid": True})
     except Exception as exc:
         return _json({"valid": False, "detail": str(exc)})

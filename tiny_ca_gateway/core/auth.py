@@ -1,12 +1,3 @@
-"""
-tiny_ca_gateway/core/auth.py
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Единая логика проверки Bearer-токена для всех фреймворков.
-
-  CA_API_TOKEN пустой/не задан → открытый доступ.
-  CA_API_TOKEN задан            → токен обязателен.
-"""
-
 from __future__ import annotations
 
 from tiny_ca_gateway.models import API_SETTINGS
@@ -21,10 +12,9 @@ def auth_enabled() -> bool:
 
 
 def check_token(provided: str | None) -> bool:
-    """True = доступ разрешён."""
     expected = get_expected_token()
     if not expected:
-        return True  # auth выключен
+        return True
     return provided == expected
 
 

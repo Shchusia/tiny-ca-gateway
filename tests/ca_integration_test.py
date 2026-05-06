@@ -1,24 +1,3 @@
-#!/usr/bin/env python3
-"""
-ca_integration_test.py (FIXED)
-~~~~~~~~~~~~~~~~~~~~~~~
-Интеграционные тесты для tiny-ca REST API.
-
-Запуск против любого бэкенда (FastAPI / Flask / aiohttp / Django Ninja):
-
-    python demos/demo-fastapi.py      # → http://localhost:8000
-    python demos/demo-flask.py        # → http://localhost:8000
-    python demos/demo-aiohttp.py      # → http://localhost:8000
-
-    python ca_integration_test.py
-    python ca_integration_test.py --base-url http://localhost:9000
-    python ca_integration_test.py --token mysecrettoken --verbose
-
-Коды выхода:
-    0 — все тесты прошли
-    1 — есть упавшие тесты
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -251,7 +230,6 @@ def run_all(s: Suite):
     print("\n━━━━ 2. ROUTE COMPLETENESS ━━━━")
 
     routes = [
-        # GET "/" проверяется отдельно через _list_get (aiohttp subapp routing)
         ("GET", "/expiring"),
         ("POST", "/root"),
         ("POST", "/intermediate"),
@@ -301,7 +279,6 @@ def run_all(s: Suite):
         s.is_datetime(body["not_valid_before"], "not_valid_before")
         s.is_datetime(body["not_valid_after"], "not_valid_after")
         s.days_valid(body["not_valid_before"], body["not_valid_after"], 90)
-        # ← КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: берём UUID из ответа сервера
         s.issued_uuid = body["uuid"]
         s.issued_serial = body["serial_number"]
 
@@ -357,7 +334,6 @@ def run_all(s: Suite):
 
     def t_issue_bad_keysize():
         code, _ = c.post("/issue", {"common_name": "bad.key.local", "key_size": 512})
-        # ← ИСПРАВЛЕНИЕ: принимаем любой client-side или server-side ответ об ошибке
         assert code in (400, 422, 500), (
             f"Expected 400/422/500 for key_size=512, got {code}"
         )
@@ -368,14 +344,7 @@ def run_all(s: Suite):
     print("\n━━━━ 4. DOWNLOAD ARTIFACTS ━━━━")
 
     def _get_artifact(uuid: str, object_type: str = "pem"):
-        """
-        Download artifact с fallback для разных фреймворков:
-          FastAPI/aiohttp: GET /{uuid_certificate}
-          Django:          GET /artifact/{uuid_certificate}  (избегает конфликта с DELETE /{serial})
-          Flask:           GET /<string:uuid_certificate>  (= /{uuid})
 
-        Порядок: /{uuid} → /artifact/{uuid} → /download/{uuid}
-        """
         code, raw = c.get_raw(f"/{uuid}", {"object_type": object_type})
         if code in (404, 405):
             # Django: /artifact/{uuid} to avoid conflict with DELETE /{serial}
@@ -407,7 +376,6 @@ def run_all(s: Suite):
 
     def t_download_stream():
         assert s.issued_uuid
-        # Порядок: /stream/{uuid} (все фреймворки) → /download/stream/{uuid} (aiohttp fallback)
         code, raw = c.get_raw(f"/stream/{s.issued_uuid}", {"object_type": "pem"})
         if code in (404, 405):
             code, raw = c.get_raw(
@@ -428,11 +396,6 @@ def run_all(s: Suite):
     print("\n━━━━ 5. LIST & SEARCH ━━━━")
 
     def _list_get(params=None):
-        """
-        GET / с fallback для aiohttp subapp routing.
-        Порядок: "/" → "/list" → ""
-        Если тело — HTML страница Django 404, пробуем следующий путь.
-        """
 
         def is_html(b):
             return isinstance(b, str) and b.strip().startswith("<")
@@ -482,7 +445,6 @@ def run_all(s: Suite):
     s.run("GET /?status=valid → only valid certs", t_list_filter_valid)
 
     def t_expiring_structure():
-        # 9999 > le=365 в FastAPI схеме → 422; используем 365
         code, body = c.get("/expiring", {"within_days": "365"})
         s.ok_2xx(code)
         s.has(body, "within_days", "count", "certificates")
@@ -549,7 +511,6 @@ def run_all(s: Suite):
 
     def t_verify_valid():
         assert s.issued_pem, "No PEM from download step"
-        # ← КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавляем задержку для синхронизации
         time.sleep(0.5)
         code, body = c.post("/verify", {"pem": s.issued_pem})
         s.ok_2xx(code)
@@ -657,7 +618,6 @@ def run_all(s: Suite):
         pem_str = raw.decode() if isinstance(raw, bytes) else raw
         c.patch("/revoke", {"serial_number": serial, "reason": "unspecified"})
         code, body = c.post("/verify", {"pem": pem_str})
-        # 200+valid=false или 422 — оба означают "сертификат не прошёл проверку"
         assert code in (200, 422), f"Expected 200 or 422, got {code}"
         if code == 200:
             assert body.get("valid") is False, "Revoked cert should fail /verify"
@@ -783,7 +743,6 @@ def run_all(s: Suite):
         serial = iss["serial_number"]
         c.delete(f"/{serial}")
         code, body = c.get(f"/status/{serial}")
-        # hard delete → 404; soft delete → 200 но не "valid"
         assert code in (200, 404), f"Expected 200 or 404 after delete, got {code}"
         if code == 200 and isinstance(body, dict):
             assert body.get("status") != "valid", f"Deleted cert status='valid'? {body}"
@@ -827,7 +786,6 @@ def run_all(s: Suite):
     print("\n━━━━ 14. AUTH ━━━━")
 
     def t_auth_protected():
-        # Проверяем /expiring — надёжно работает во всех фреймворках (GET "/" иначе резолвится в aiohttp)
         endpoints = [("/expiring", "GET"), ("/maintenance/expire", "POST")]
         codes = []
         for ep, method in endpoints:
