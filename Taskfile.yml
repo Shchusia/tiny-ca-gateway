@@ -1,0 +1,464 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+
+tasks:
+  default:
+    cmds:
+      - task help
+  help:
+    desc: Show available tasks and their description
+    silent: true
+    cmds:
+      - 'echo ""'
+      - 'echo "Usage: task [task-name] [options]"'
+      - 'echo ""'
+      - 'echo "Available tasks:"'
+      - task --list
+
+  sync:
+    desc: "Synchronize dependencies and update linting group using uv"
+    cmds:
+      - uv sync -U --group lint --group demo --active --inexact
+  lint:
+    desc: Check code by linters
+    cmds:
+      - pre-commit run --all-files
+
+  prepare-env:
+    desc: "Bootstrap environment files (.env) for all demo applications"
+    dir: ./examples
+    silent: true
+    cmds:
+      - cp .env fastapi/.env
+      - cp .env django/.env
+      - cp .env flask/.env
+      - cp .env aiohttp/.env
+
+  run-fastapi-demo:
+    desc: "Run FastAPI demo. Options: MODE=prod (Uvicorn/Production) or MODE=dev (Python/Development)"
+    dir: ./examples/fastapi
+    silent: true
+    vars:
+      MODE: '{{.MODE | default "prod"}}'
+    cmds:
+      - task: prepare-env
+      - defer: { task: cleanup-env }
+      - |
+        if [ "{{.MODE}}" == "prod" ]; then
+          echo "Run fastapi as production with uvicorn"
+          uv run uvicorn demo-fastapi:app --host 0.0.0.0 --port 8000 --workers 4
+        else
+          echo "Run fastapi as dev"
+          uv run python demo-fastapi.py
+        fi
+
+  run-flask-demo:
+    desc: "Run Flask demo. Options: MODE=prod (Gunicorn) or MODE=dev (Python)"
+    dir: ./examples/flask
+    silent: true
+    vars:
+      MODE: '{{.MODE | default "prod"}}'
+    cmds:
+      - task: prepare-env
+      - |
+        if [ "{{.MODE}}" == "prod" ]; then
+          echo "Run flask as production with gunicorn"
+          uv run gunicorn 'demo-flask:create_app()' -b 0.0.0.0:8000 --workers 4
+        else
+          echo "Run flask as dev"
+          uv run python demo-flask.py
+        fi
+
+  run-aiohttp-demo:
+    desc: "Run aiohttp demo. Options: MODE=prod (Gunicorn + aiohttp worker) or MODE=dev (Python)"
+    dir: ./examples/aiohttp
+    silent: true
+    vars:
+      MODE: '{{.MODE | default "prod"}}'
+    cmds:
+      - task: prepare-env
+      - |
+        if [ "{{.MODE}}" == "prod" ]; then
+          echo "Run aiohttp as production with gunicorn"
+          uv run gunicorn 'demo-aiohttp:app' -k aiohttp.GunicornWebWorker --bind 0.0.0.0:8000 --workers 4
+        else
+          echo "Run aiohttp demo as dev"
+          uv run python demo-aiohttp.py
+        fi
+
+  run-django-demo:
+    desc: "Run Django demo. Options: MODE=asgi (Uvicorn), MODE=wsgi (Gunicorn), or MODE=dev (runserver)"
+    dir: ./examples/django
+    silent: true
+    vars:
+      MODE: '{{.MODE | default "asgi"}}'
+    cmds:
+      - task: prepare-env
+      - uv run python manage.py migrate
+      - |
+        if [ "{{.MODE}}" == "asgi" ]; then
+          echo "Run django as production with uvicorn"
+          uv run uvicorn ca_project.asgi:application --workers 1 --host 0.0.0.0 --port 8000
+        elif [ "{{.MODE}}" == "wsgi" ]; then
+          echo "Run django as production with gunicorn"
+          uv run gunicorn ca_project.wsgi:application -b 0.0.0.0:8000 --workers 4
+        else
+          echo "Run django as dev"
+          uv run python manage.py runserver 8000
+        fi
+
+  run-tests:
+    desc: "Run integration tests against a running server (PORT=8000, TOKEN=...)"
+    dir: ./tests
+    silent: true
+    vars:
+      PORT:  '{{.PORT  | default "8000"}}'
+      TOKEN: '{{.TOKEN | default ""}}'
+    cmds:
+      - |
+        ARGS="--base-url http://localhost:{{.PORT}}"
+        if [ -n "{{.TOKEN}}" ]; then
+          ARGS="$ARGS --token {{.TOKEN}}"
+        fi
+        uv run python ca_integration_test.py $ARGS
+
+  # ---------------------------------------------------------------------------
+  # Internal helpers used by run-all-tests
+  # ---------------------------------------------------------------------------
+
+  _wait-ready:
+    # Poll http://localhost:PORT/api/v1/ca/cert until it responds or timeout.
+    internal: true
+    silent: true
+    vars:
+      PORT:    '{{.PORT    | default "8000"}}'
+      TIMEOUT: '{{.TIMEOUT | default "30"}}'
+    cmds:
+      - |
+        echo "  Waiting for server on port {{.PORT}} (up to {{.TIMEOUT}}s)..."
+        for i in $(seq 1 {{.TIMEOUT}}); do
+          if curl -sf --max-time 1 http://localhost:{{.PORT}}/api/v1/ca/cert > /dev/null 2>&1; then
+            echo "  Server ready (${i}s)"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "  ERROR: server did not start within {{.TIMEOUT}}s"
+        exit 1
+
+  _run-backend-tests:
+    # Start a backend process, wait for it to be ready, run tests, kill it.
+    # Required vars: LABEL, START_CMD, START_DIR
+    # Optional vars: PORT (default 8000), TOKEN, TIMEOUT (default 30)
+    internal: true
+    silent: true
+    vars:
+      PORT:    '{{.PORT    | default "8000"}}'
+      TOKEN:   '{{.TOKEN   | default ""}}'
+      TIMEOUT: '{{.TIMEOUT | default "30"}}'
+    cmds:
+      - |
+        # ── header ──────────────────────────────────────────────────────────
+        echo ""
+        echo "╔══════════════════════════════════════════════════════════════╗"
+        printf  "║  %-60s║\n" "{{.LABEL}}"
+        echo "╚══════════════════════════════════════════════════════════════╝"
+
+        # ── start server in background ───────────────────────────────────
+        cd {{.START_DIR}}
+        eval "{{.START_CMD}}" > /tmp/server-{{.LABEL | replace " " "-"}}.log 2>&1 &
+        SERVER_PID=$!
+        echo "  Started PID=$SERVER_PID"
+
+        # ── wait for readiness ───────────────────────────────────────────
+        READY=0
+        for i in $(seq 1 {{.TIMEOUT}}); do
+          if curl -sf --max-time 1 http://localhost:{{.PORT}}/api/v1/ca/cert > /dev/null 2>&1; then
+            echo "  Ready in ${i}s"
+            READY=1
+            break
+          fi
+          sleep 1
+        done
+
+        if [ "$READY" -eq 0 ]; then
+          echo "  ✗ Server did not start within {{.TIMEOUT}}s — skipping tests"
+          echo "  Last log lines:"
+          tail -5 /tmp/server-{{.LABEL | replace " " "-"}}.log | sed 's/^/    /'
+          kill $SERVER_PID 2>/dev/null
+          # Record failure in summary file
+          echo "FAIL {{.LABEL}}" >> /tmp/all-tests-summary.txt
+          exit 0   # don't abort the whole suite
+        fi
+
+        # ── run tests ────────────────────────────────────────────────────
+        cd {{.ROOT_DIR}}/tests
+        TEST_ARGS="--base-url http://localhost:{{.PORT}}"
+        if [ -n "{{.TOKEN}}" ]; then
+          TEST_ARGS="$TEST_ARGS --token {{.TOKEN}}"
+        fi
+
+        if uv run python ca_integration_test.py $TEST_ARGS; then
+          echo "PASS {{.LABEL}}" >> /tmp/all-tests-summary.txt
+        else
+          echo "FAIL {{.LABEL}}" >> /tmp/all-tests-summary.txt
+        fi
+
+        # ── stop server ──────────────────────────────────────────────────
+        echo "  Stopping server PID=$SERVER_PID..."
+        kill $SERVER_PID 2>/dev/null
+        wait $SERVER_PID 2>/dev/null
+        sleep 1   # let the port free up
+
+  # ---------------------------------------------------------------------------
+  # Main: run tests against ALL frameworks and modes
+  # ---------------------------------------------------------------------------
+
+  run-all-tests:
+    desc: |
+      Run integration tests against all frameworks and server modes.
+      Starts each backend, runs tests, stops it, then shows a summary.
+
+      Options:
+        TOKEN=<bearer>   Bearer token (must match .env CA_API_TOKEN)
+        PORT=8000        Port (default 8000)
+        TIMEOUT=30       Seconds to wait for server startup
+
+      Examples:
+        task run-all-tests
+        task run-all-tests TOKEN=mysecret
+        task run-all-tests TOKEN=mysecret TIMEOUT=60
+    silent: true
+    vars:
+      PORT:    '{{.PORT    | default "8000"}}'
+      TOKEN:   '{{.TOKEN   | default ""}}'
+      TIMEOUT: '{{.TIMEOUT | default "30"}}'
+      ROOT_DIR:
+        sh: pwd
+    cmds:
+      - task: prepare-env
+      - |
+        # Clean up any stale summary
+        rm -f /tmp/all-tests-summary.txt
+        touch /tmp/all-tests-summary.txt
+
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  tiny-ca Integration Test Suite — ALL FRAMEWORKS"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        ROOT="{{.ROOT_DIR}}"
+        PORT="{{.PORT}}"
+        TOKEN="{{.TOKEN}}"
+        TIMEOUT="{{.TIMEOUT}}"
+
+        run_backend() {
+          local LABEL="$1"
+          local START_DIR="$2"
+          local START_CMD="$3"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          printf  "║  %-60s║\n" "$LABEL"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+
+          # Start server
+          cd "$START_DIR"
+          eval "$START_CMD" > /tmp/server-test.log 2>&1 &
+          SERVER_PID=$!
+          echo "  Started PID=$SERVER_PID"
+
+          # Wait for readiness
+          READY=0
+          for i in $(seq 1 "$TIMEOUT"); do
+            if curl -sf --max-time 1 "http://localhost:${PORT}/api/v1/ca/cert" > /dev/null 2>&1; then
+              echo "  Ready in ${i}s"
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" -eq 0 ]; then
+            echo "  ✗ Did not start in ${TIMEOUT}s — skipping"
+            tail -5 /tmp/server-test.log | sed 's/^/    /'
+            kill "$SERVER_PID" 2>/dev/null || true
+            echo "SKIP $LABEL" >> /tmp/all-tests-summary.txt
+            return
+          fi
+
+          # Run tests
+          cd "$ROOT/tests"
+          TEST_ARGS="--base-url http://localhost:${PORT}"
+          [ -n "$TOKEN" ] && TEST_ARGS="$TEST_ARGS --token $TOKEN"
+
+          if uv run python ca_integration_test.py $TEST_ARGS; then
+            echo "PASS $LABEL" >> /tmp/all-tests-summary.txt
+          else
+            echo "FAIL $LABEL" >> /tmp/all-tests-summary.txt
+          fi
+
+          # Stop server
+          echo "  Stopping PID=$SERVER_PID..."
+          kill "$SERVER_PID" 2>/dev/null || true
+          wait "$SERVER_PID" 2>/dev/null || true
+          sleep 2   # let port free up
+          cd "$ROOT"
+        }
+
+        # ── FastAPI ──────────────────────────────────────────────────────
+        run_backend \
+          "FastAPI  │ dev (python)" \
+          "$ROOT/examples/fastapi" \
+          "uv run python demo-fastapi.py"
+
+        run_backend \
+          "FastAPI  │ prod (uvicorn, 1 worker)" \
+          "$ROOT/examples/fastapi" \
+          "uv run uvicorn demo-fastapi:app --host 0.0.0.0 --port $PORT --workers 1"
+
+        # ── Flask ────────────────────────────────────────────────────────
+        run_backend \
+          "Flask    │ dev (python)" \
+          "$ROOT/examples/flask" \
+          "uv run python demo-flask.py"
+
+        run_backend \
+          "Flask    │ prod (gunicorn, 1 worker)" \
+          "$ROOT/examples/flask" \
+          "uv run gunicorn 'demo-flask:create_app()' -b 0.0.0.0:$PORT --workers 1"
+
+        # ── aiohttp ──────────────────────────────────────────────────────
+        run_backend \
+          "aiohttp  │ dev (python)" \
+          "$ROOT/examples/aiohttp" \
+          "uv run python demo-aiohttp.py"
+
+        run_backend \
+          "aiohttp  │ prod (gunicorn + aiohttp worker)" \
+          "$ROOT/examples/aiohttp" \
+          "uv run gunicorn 'demo-aiohttp:app' -k aiohttp.GunicornWebWorker --bind 0.0.0.0:$PORT --workers 1"
+
+        # ── Django ───────────────────────────────────────────────────────
+        # Migrate once before Django tests
+        cd "$ROOT/examples/django" && uv run python manage.py migrate --run-syncdb -v 0 2>/dev/null || true
+        cd "$ROOT"
+
+        run_backend \
+          "Django   │ dev (runserver)" \
+          "$ROOT/examples/django" \
+          "uv run python manage.py runserver $PORT --noreload"
+
+        run_backend \
+          "Django   │ asgi (uvicorn, 1 worker)" \
+          "$ROOT/examples/django" \
+          "uv run uvicorn ca_project.asgi:application --workers 1 --host 0.0.0.0 --port $PORT"
+
+        run_backend \
+          "Django   │ wsgi (gunicorn, 1 worker)" \
+          "$ROOT/examples/django" \
+          "uv run gunicorn ca_project.wsgi:application -b 0.0.0.0:$PORT --workers 1"
+
+        # ── Summary ──────────────────────────────────────────────────────
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  SUMMARY"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
+        while IFS= read -r line; do
+          TOTAL=$((TOTAL+1))
+          STATUS=$(echo "$line" | cut -d' ' -f1)
+          LABEL=$(echo "$line" | cut -d' ' -f2-)
+          case "$STATUS" in
+            PASS)
+              printf "  ✓  %s\n" "$LABEL"
+              PASSED=$((PASSED+1))
+              ;;
+            FAIL)
+              printf "  ✗  %s\n" "$LABEL"
+              FAILED=$((FAILED+1))
+              ;;
+            SKIP)
+              printf "  ⚠  %s  (did not start)\n" "$LABEL"
+              SKIPPED=$((SKIPPED+1))
+              ;;
+          esac
+        done < /tmp/all-tests-summary.txt
+
+        echo ""
+        echo "  Total: $TOTAL  │  Passed: $PASSED  │  Failed: $FAILED  │  Skipped: $SKIPPED"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+
+        # Exit with failure if any backend failed
+        if [ "$FAILED" -gt 0 ]; then
+          exit 1
+        fi
+        exit 0
+  build:
+    desc: Build library
+    cmds:
+      - rm -rf dist
+      - uv build
+
+  publish:
+    desc: Publish the compiled library
+    cmds:
+      - uv publish
+
+  release:
+    desc: "Bump version, build and publish. Usage: task release [type=patch|minor|major] (default: patch)"
+    silent: true
+    vars:
+      BUMP_TYPE: '{{.type | default "patch"}}'
+      PYPROJECT: "pyproject.toml"
+    cmds:
+      - |
+        # Validate type
+        if [ "{{.BUMP_TYPE}}" != "patch" ] && [ "{{.BUMP_TYPE}}" != "minor" ] && [ "{{.BUMP_TYPE}}" != "major" ]; then
+          echo "[ERROR] Invalid type '{{.BUMP_TYPE}}'. Use: patch, minor or major"
+          exit 1
+        fi
+
+        # Extract current version from pyproject.toml
+        CURRENT=$(grep '^version' {{.PYPROJECT}} | head -1 | sed 's/version *= *"\(.*\)"/\1/')
+        if [ -z "$CURRENT" ]; then
+          echo "[ERROR] Could not find version in {{.PYPROJECT}}"
+          exit 1
+        fi
+
+        MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+        MINOR=$(echo "$CURRENT" | cut -d. -f2)
+        PATCH=$(echo "$CURRENT" | cut -d. -f3)
+
+        if [ "{{.BUMP_TYPE}}" = "major" ]; then
+          MAJOR=$((MAJOR + 1))
+          MINOR=0
+          PATCH=0
+        elif [ "{{.BUMP_TYPE}}" = "minor" ]; then
+          MINOR=$((MINOR + 1))
+          PATCH=0
+        else
+          PATCH=$((PATCH + 1))
+        fi
+
+        NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+        echo ">>> Bumping version: ${CURRENT} → ${NEW_VERSION} ({{.BUMP_TYPE}})"
+
+        # Replace version in pyproject.toml (only first occurrence — the package version)
+        sed -i "0,/^version = \"${CURRENT}\"/s//version = \"${NEW_VERSION}\"/" {{.PYPROJECT}}
+
+        # Verify
+        UPDATED=$(grep '^version' {{.PYPROJECT}} | head -1 | sed 's/version *= *"\(.*\)"/\1/')
+        if [ "$UPDATED" != "$NEW_VERSION" ]; then
+          echo "[ERROR] Version update failed. Check {{.PYPROJECT}} manually."
+          exit 1
+        fi
+
+        echo "[OK] Version updated to ${NEW_VERSION}"
+
+      - task: build
+#      - task: publish

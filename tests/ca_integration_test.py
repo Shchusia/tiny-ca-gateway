@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -878,13 +879,7 @@ def run_all(s: Suite):
         import re as _re
 
         def norm(p: str) -> str:
-            """Extract pure base64: strip PEM headers/footers and all whitespace."""
-            lines = [
-                ln
-                for ln in p.strip().splitlines()
-                if not ln.strip().startswith("-----")
-            ]
-            return _re.sub(r"\s+", "", "".join(lines))
+            return re.sub(r"[^A-Za-z0-9+/=]", "", p)
 
         dl_norm = norm(pem_dl)
         if not dl_norm:
