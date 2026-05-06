@@ -1,0 +1,26 @@
+from enum import StrEnum
+
+
+class RoutesSummary(StrEnum):
+    DOWNLOAD = "Download certificate artefact (pem / key / csr)"
+    DOWNLOAD_STREAM = "Stream certificate artefact"
+    CHAIN = "Full PEM certificate chain [leaf, ca]"
+    INSPECT = "Structured certificate details"
+    STATUS = "Get certificate lifecycle status"
+    DELETE = "Hard-delete certificate from DB and storage"
+    RENEW = "Renew certificate (same key, new validity)"
+    ROTATE = "Rotate certificate (revoke + re-issue with new key)"
+    REVOKE = "Revoke a certificate"
+    EXPORT = "Export PKCS#12 (.p12) bundle"
+    CRL_VERIFY = "Verify CRL signature and expiry"
+    COSIGN = "Co-sign a third-party certificate with this CA"
+    VERIFY = "Verify certificate (chain + signature + revocation)"
+    CRL_REFRESH = "Force-regenerate the CRL"
+    MAINTENANCE_EXPIRE = "Bulk-mark expired certificates"
+    ISSUE = "Issue leaf certificate"
+    CA_INTERMEDIATE = "Issue intermediate CA certificate"
+    CA_ROOT = "Bootstrap self-signed root CA"
+    GET_LIST_EXPIRING_CERTS = "Certificates expiring soon"
+    GET_LIST_CERTS = "List certificates"
+    BASE_CRL = "Download the current CRL (public, no auth)"
+    GET_PUBLIC_CERT = "Download CA public certificate (no auth)"
