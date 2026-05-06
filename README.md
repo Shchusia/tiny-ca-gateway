@@ -4,9 +4,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/tiny-ca-gateway)](https://pypi.org/project/tiny-ca-gateway/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**tiny-ca-gateway** provides ready-to-use REST API routes for [tiny-ca](https://github.com/yourorg/tiny-ca) — a lightweight Python Certificate Authority library. Mount a full-featured CA HTTP API into any of your existing applications in minutes.
+**tiny-ca-gateway** provides ready-to-use REST API routes for  [tiny-ca](https://github.com/Shchusia/tiny_ca) — a lightweight Python Certificate Authority library. Mount a full-featured CA HTTP API into any of your existing applications in minutes.
 
-> **Built on top of [tiny-ca](https://github.com/Shchusia/tiny_ca).** This package only provides the HTTP layer. For CA internals, certificate issuance logic, and database models, see the [tiny-ca documentation](https://github.com/yourorg/tiny-ca).
+> **Built on top of [tiny-ca](https://github.com/Shchusia/tiny_ca).** This package only provides the HTTP layer. For CA internals, certificate issuance logic, and database models, see the [tiny-ca documentation](https://github.com/Shchusia/tiny_ca).
 
 ---
 
