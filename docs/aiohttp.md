@@ -13,17 +13,19 @@ pip install "tiny-ca-gateway[aiohttp]"
 ```python
 # app.py
 import os
+
+# Settings are read when tiny_ca_gateway is first imported,
+# so configure the environment before importing it.
+os.environ.setdefault("CA_CER", "certs/ca.pem")
+os.environ.setdefault("CA_KEY",  "certs/ca.key")
+os.environ.setdefault("PATH_TO_CRL",  "certs/crl.pem")
+os.environ.setdefault("PATH_TO_CERTIFICATES_FOLDER", "certs/")
+os.environ.setdefault("DB_URL_CA",    "sqlite+aiosqlite:///ca.db")
+os.environ.setdefault("API_TOKEN", "")
 import json
 from aiohttp import web
 from tiny_ca_gateway.aiohttp.lifespan.manager import AiohttpCAManager
 from tiny_ca_gateway.aiohttp.api.v1.ca_routes import routes
-
-os.environ.setdefault("CA_CERT_PATH", "certs/ca.pem")
-os.environ.setdefault("CA_KEY_PATH",  "certs/ca.key")
-os.environ.setdefault("CA_CRL_PATH",  "certs/crl.pem")
-os.environ.setdefault("CA_CERTS_DIR", "certs/")
-os.environ.setdefault("CA_DB_URL",    "sqlite+aiosqlite:///ca.db")
-os.environ.setdefault("CA_API_TOKEN", "")
 
 async def ca_lifespan(app: web.Application):
     """aiohttp cleanup_ctx — runs before first request / after last."""
@@ -148,7 +150,7 @@ app.router.add_get("/docs", swagger_ui)
 
 ## Securing with a bearer token
 
-Set `CA_API_TOKEN`. Protected endpoints require:
+Set `API_TOKEN`. Protected endpoints require:
 
 ```
 Authorization: Bearer <your-token>

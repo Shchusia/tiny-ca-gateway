@@ -13,18 +13,20 @@ pip install "tiny-ca-gateway[fastapi]"
 ```python
 # main.py
 import os
+
+# Settings are read when tiny_ca_gateway is first imported,
+# so configure the environment before importing it.
+os.environ.setdefault("CA_CER", "certs/ca.pem")
+os.environ.setdefault("CA_KEY",  "certs/ca.key")
+os.environ.setdefault("PATH_TO_CRL",  "certs/crl.pem")
+os.environ.setdefault("PATH_TO_CERTIFICATES_FOLDER", "certs/")
+os.environ.setdefault("DB_URL_CA",    "sqlite+aiosqlite:///ca.db")
+os.environ.setdefault("API_TOKEN", "")        # empty = open access (not for FastAPI)
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from tiny_ca_gateway.fastapi.lifespan.manager import FastAPILifespanManager
 from tiny_ca_gateway.fastapi.api.v1.ca_routes import router as ca_router
 
-# Configure storage paths (can also be set via environment variables)
-os.environ.setdefault("CA_CERT_PATH", "certs/ca.pem")
-os.environ.setdefault("CA_KEY_PATH",  "certs/ca.key")
-os.environ.setdefault("CA_CRL_PATH",  "certs/crl.pem")
-os.environ.setdefault("CA_CERTS_DIR", "certs/")
-os.environ.setdefault("CA_DB_URL",    "sqlite+aiosqlite:///ca.db")
-os.environ.setdefault("CA_API_TOKEN", "")        # empty = open access
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,12 +78,12 @@ async def lifespan(app: FastAPI):
 
 ```bash
 # .env
-CA_CERT_PATH=certs/ca.pem
-CA_KEY_PATH=certs/ca.key
-CA_CRL_PATH=certs/crl.pem
-CA_CERTS_DIR=certs/
-CA_DB_URL=sqlite+aiosqlite:///ca.db
-CA_API_TOKEN=your-secret-token
+CA_CER=certs/ca.pem
+CA_KEY=certs/ca.key
+PATH_TO_CRL=certs/crl.pem
+PATH_TO_CERTIFICATES_FOLDER=certs/
+DB_URL_CA=sqlite+aiosqlite:///ca.db
+API_TOKEN=your-secret-token
 ```
 
 Load it with `python-dotenv` or `pydantic-settings` before importing the gateway.
@@ -90,7 +92,7 @@ Load it with `python-dotenv` or `pydantic-settings` before importing the gateway
 
 ## Securing with a bearer token
 
-Set `CA_API_TOKEN` to a non-empty value. All protected endpoints will require:
+Set `API_TOKEN` to a non-empty value. All protected endpoints will require:
 
 ```
 Authorization: Bearer <your-token>

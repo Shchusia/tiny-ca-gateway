@@ -13,16 +13,18 @@ pip install "tiny-ca-gateway[flask]"
 ```python
 # app.py
 import os
+
+# Settings are read when tiny_ca_gateway is first imported,
+# so configure the environment before importing it.
+os.environ.setdefault("CA_CER", "certs/ca.pem")
+os.environ.setdefault("CA_KEY",  "certs/ca.key")
+os.environ.setdefault("PATH_TO_CRL",  "certs/crl.pem")
+os.environ.setdefault("PATH_TO_CERTIFICATES_FOLDER", "certs/")
+os.environ.setdefault("DB_URL_CA",    "sqlite+aiosqlite:///ca.db")
+os.environ.setdefault("API_TOKEN", "")
 from flask import Flask
 from tiny_ca_gateway.flask.lifespan.manager import FlaskCAManager
 from tiny_ca_gateway.flask.api.v1.ca_blueprint import ca_bp
-
-os.environ.setdefault("CA_CERT_PATH", "certs/ca.pem")
-os.environ.setdefault("CA_KEY_PATH",  "certs/ca.key")
-os.environ.setdefault("CA_CRL_PATH",  "certs/crl.pem")
-os.environ.setdefault("CA_CERTS_DIR", "certs/")
-os.environ.setdefault("CA_DB_URL",    "sqlite+aiosqlite:///ca.db")
-os.environ.setdefault("CA_API_TOKEN", "")
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -115,7 +117,7 @@ def swagger_ui():
 
 ## Securing with a bearer token
 
-Set `CA_API_TOKEN` to a non-empty value. Protected endpoints require:
+Set `API_TOKEN` to a non-empty value. Protected endpoints require:
 
 ```
 Authorization: Bearer <your-token>
