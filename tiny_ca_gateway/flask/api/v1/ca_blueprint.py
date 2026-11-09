@@ -9,7 +9,7 @@ import uuid as _uuid_module
 
 import aiofiles
 from cryptography import x509
-from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
+from cryptography.hazmat.primitives.serialization import Encoding
 from flask import (
     Blueprint,
     Response,
@@ -19,6 +19,7 @@ from flask import (
     request,
     stream_with_context,
 )
+from tiny_ca.exc import CertificateRevokedError
 from tiny_ca.managers.async_lifecycle_manager import AsyncCertLifecycleManager
 from tiny_ca.models.certificate import CAConfig
 
@@ -37,7 +38,18 @@ from tiny_ca_gateway.core import (
     get_artifact_path,
     record_to_item,
 )
-from tiny_ca_gateway.core.helpers import load_pem_cert, load_pem_crl
+from tiny_ca_gateway.core.auth import auth_enabled, check_token, extract_bearer
+from tiny_ca_gateway.core.helpers import (
+    load_pem_cert,
+    load_pem_crl,
+    load_stored_private_key,
+)
+from tiny_ca_gateway.core.operations import (
+    certify_intermediate,
+    error_status,
+    issue_intermediate,
+)
+from tiny_ca_gateway.core.schemas import CertifyIntermediateCARequest
 from tiny_ca_gateway.flask.lifespan.manager import FlaskCAManager
 from tiny_ca_gateway.models import API_SETTINGS
 
@@ -61,11 +73,9 @@ def _require_factory() -> AsyncCertLifecycleManager:
 
 
 def _verify_token() -> None:
-    expected = getattr(API_SETTINGS, "api_token", None)
-    if not expected:
+    if not auth_enabled():
         return
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != expected:
+    if not check_token(extract_bearer(request.headers.get("Authorization"))):
         abort(make_response(jsonify(detail="Invalid or missing bearer token."), 401))
 
 
@@ -255,17 +265,34 @@ async def issue_intermediate_ca() -> Response | tuple[Response, int]:
         return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
-        cert, _ = await mgr.issue_intermediate_ca(
-            common_name=payload.common_name,
-            key_size=payload.key_size,
-            days_valid=payload.days_valid,
-            path_length=payload.path_length,
-            organization=payload.organization,
-            country=payload.country,
-            uuid_str=_uuid,
-        )
+        cert = await issue_intermediate(mgr, payload, _uuid)
+    except Exception as exc:
+        return jsonify(detail=str(exc)), error_status(exc, 422)
+    return _json(
+        {
+            "uuid": _uuid,
+            "serial_number": cert.serial_number,
+            "common_name": payload.common_name,
+            "not_valid_before": cert.not_valid_before_utc.isoformat(),
+            "not_valid_after": cert.not_valid_after_utc.isoformat(),
+        }
+    )
+
+
+@ca_bp.post(Routes.CA_INTERMEDIATE_CERTIFY)
+@_async
+async def certify_intermediate_ca() -> Response | tuple[Response, int]:
+    _verify_token()
+    mgr = _require_factory()
+    try:
+        payload = CertifyIntermediateCARequest.model_validate(request.get_json())
     except Exception as exc:
         return jsonify(detail=str(exc)), 422
+    _uuid = str(_uuid_module.uuid4())
+    try:
+        cert = await certify_intermediate(mgr, payload, _uuid)
+    except Exception as exc:
+        return jsonify(detail=str(exc)), error_status(exc, 422)
     return _json(
         {
             "uuid": _uuid,
@@ -288,14 +315,6 @@ async def issue_certificate() -> Response | tuple[Response, int]:
         return jsonify(detail=str(exc)), 422
     _uuid = str(_uuid_module.uuid4())
     try:
-        if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
-            return (
-                jsonify(
-                    detail=f"Invalid key_size: {payload.key_size}. Must be 2048-4096."
-                ),
-                400,
-            )
-
         cert, _, _ = await mgr.issue_certificate(
             config=build_client_config(payload),
             uuid_str=_uuid,
@@ -306,7 +325,7 @@ async def issue_certificate() -> Response | tuple[Response, int]:
             return jsonify(detail=str(exc)), 400
         return jsonify(detail=str(exc)), 409
     except Exception as exc:
-        return jsonify(detail=str(exc)), 409
+        return jsonify(detail=str(exc)), error_status(exc, 409)
     return _json(
         {
             "uuid": _uuid,
@@ -373,19 +392,10 @@ async def verify_certificate() -> Response | tuple[Response, int]:
         return jsonify(detail=str(exc)), 422
     cert = _load_pem_cert(payload.pem)
     try:
-        result = await _require_factory().verify_certificate(cert=cert)
-        if isinstance(result, tuple):
-            valid, reason = result
-            if valid:
-                return _json({"valid": True})
-            else:
-                return _json(
-                    {"valid": False, "detail": reason or "Verification failed"}
-                )
-
-        return _json({"valid": True})
+        valid = await _require_factory().verify_certificate(cert=cert)
     except Exception as exc:
         return _json({"valid": False, "detail": str(exc)})
+    return _json({"valid": valid, "detail": "" if valid else "Verification failed"})
 
 
 @ca_bp.post(Routes.COSIGN)
@@ -404,7 +414,7 @@ async def cosign_certificate() -> Response | tuple[Response, int]:
             valid_from=payload.valid_from,
         )
     except Exception as exc:
-        return jsonify(detail=str(exc)), 422
+        return jsonify(detail=str(exc)), error_status(exc, 422)
     return _json(
         {
             "serial_number": cosigned.serial_number,
@@ -430,8 +440,7 @@ async def export_pkcs12(serial: int) -> Response | tuple[Response, int]:
     key_path = await get_artifact_path(record.uuid, "key")
     if not key_path:
         return jsonify(detail="Private key not found"), 404
-    async with aiofiles.open(key_path, "rb") as fh:
-        private_key = load_pem_private_key(await fh.read(), password=None)
+    private_key = await load_stored_private_key(key_path)
     p12 = await mgr.export_pkcs12(
         cert=x509.load_pem_x509_certificate(record.certificate_pem.encode()),
         private_key=private_key,
@@ -484,7 +493,7 @@ async def rotate_certificate(serial: int) -> Response | tuple[Response, int]:
             serial=serial, config=build_client_config(payload)
         )
     except Exception as exc:
-        return jsonify(detail=str(exc)), 404
+        return jsonify(detail=str(exc)), error_status(exc, 404)
     return _json(
         {
             "uuid": _uuid,
@@ -509,7 +518,7 @@ async def renew_certificate(serial: int) -> Response | tuple[Response, int]:
             serial=serial, days_valid=payload.days_valid
         )
     except Exception as exc:
-        return jsonify(detail=str(exc)), 404
+        return jsonify(detail=str(exc)), error_status(exc, 404)
     return _json(
         {
             "old_serial": serial,
@@ -523,7 +532,11 @@ async def renew_certificate(serial: int) -> Response | tuple[Response, int]:
 @_async
 async def delete_certificate(serial: int) -> Response | tuple[Response, int]:
     _verify_token()
-    if not await _require_factory().delete_certificate(serial=serial):
+    try:
+        deleted = await _require_factory().delete_certificate(serial=serial)
+    except CertificateRevokedError as exc:
+        return jsonify(detail=str(exc)), 409
+    if not deleted:
         return jsonify(detail=f"Certificate serial={serial} not found"), 404
     return _json({"deleted": True, "serial": serial})
 

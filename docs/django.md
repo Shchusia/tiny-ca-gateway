@@ -15,12 +15,12 @@ pip install "tiny-ca-gateway[django]"
 Set the following variables before Django starts (in `.env`, shell, or `settings.py`):
 
 ```bash
-CA_CERT_PATH=certs/ca.pem
-CA_KEY_PATH=certs/ca.key
-CA_CRL_PATH=certs/crl.pem
-CA_CERTS_DIR=certs/
-CA_DB_URL=sqlite+aiosqlite:///ca.db
-CA_API_TOKEN=                      # empty = open access
+CA_CER=certs/ca.pem
+CA_KEY=certs/ca.key
+PATH_TO_CRL=certs/crl.pem
+PATH_TO_CERTIFICATES_FOLDER=certs/
+DB_URL_CA=sqlite+aiosqlite:///ca.db
+API_TOKEN=                      # empty = open access
 ```
 
 ### 2. App config (`apps.py`)
@@ -167,13 +167,13 @@ application = CALifespanMiddleware(_django_app)
 
 ## Bearer token authentication
 
-Set `CA_API_TOKEN`. Protected endpoints require:
+Set `API_TOKEN`. Protected endpoints require:
 
 ```
 Authorization: Bearer <your-token>
 ```
 
-The auth layer uses Django Ninja's `HttpBearer`. When `CA_API_TOKEN` is empty, the `__call__` bypass allows all requests through without any header requirement — no need to configure anything for local development.
+The auth layer uses Django Ninja's `HttpBearer`. When `API_TOKEN` is empty, the `__call__` bypass allows all requests through without any header requirement — no need to configure anything for local development.
 
 `GET /api/v1/ca/cert` and `GET /api/v1/ca/crl` are always public (`auth=None`).
 

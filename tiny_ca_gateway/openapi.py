@@ -8,9 +8,12 @@ def build_openapi_schema(
 ) -> dict[str, Any]:
     import json
 
-    from pydantic import TypeAdapter
+    from pydantic import BaseModel
+    from pydantic.json_schema import models_json_schema
+    from tiny_ca.models.certificate import CAConfig
 
     from tiny_ca_gateway.core.schemas import (
+        CertifyIntermediateCARequest,
         CertListItem,
         ChainResponse,
         CosignRequest,
@@ -35,10 +38,9 @@ def build_openapi_schema(
         VerifyResponse,
     )
 
-    def schema(model: Any) -> dict[str, Any]:
-        return TypeAdapter(model).json_schema()
-
-    all_models = [
+    all_models: list[type[BaseModel]] = [
+        CAConfig,
+        CertifyIntermediateCARequest,
         CertListItem,
         ExpiringResponse,
         CreateRootCaResponse,
@@ -63,10 +65,13 @@ def build_openapi_schema(
         RenewRequest,
     ]
 
-    components: dict[str, Any] = {}
-    for m in all_models:
-        s = schema(m)
-        components[m.__name__] = s
+    # One shared definitions table, so nested models (NameConstraintsConfig,
+    # KeyAlgorithm, ...) resolve as components instead of per-model $defs.
+    _, defs = models_json_schema(
+        [(m, "validation") for m in all_models],
+        ref_template="#/components/schemas/{model}",
+    )
+    components: dict[str, Any] = defs.get("$defs", {})
 
     def ref(name: str) -> dict[str, Any]:
         return {"$ref": f"#/components/schemas/{name}"}
@@ -211,7 +216,7 @@ def build_openapi_schema(
                 "tags": ["CA Bootstrap"],
                 "summary": "Bootstrap self-signed root CA",
                 "security": bearer,
-                **body("CreateRootCaResponse"),  # reuse — CAConfig not in schemas
+                **body("CAConfig"),
                 "responses": resp("CreateRootCaResponse"),
             }
         },
@@ -221,6 +226,15 @@ def build_openapi_schema(
                 "summary": "Issue intermediate CA",
                 "security": bearer,
                 **body("IntermediateCARequest"),
+                "responses": resp("IssueCertResponse"),
+            }
+        },
+        "/api/v1/ca/intermediate/certify": {
+            "post": {
+                "tags": ["CA Bootstrap"],
+                "summary": "Certify an intermediate CA from its CSR (HSM-held key)",
+                "security": bearer,
+                **body("CertifyIntermediateCARequest"),
                 "responses": resp("IssueCertResponse"),
             }
         },

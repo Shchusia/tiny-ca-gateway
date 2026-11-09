@@ -13,7 +13,8 @@ import logging
 from pathlib import Path
 import shutil
 
-from tiny_ca import CAConfig, CAFileLoader, CertificateFactory
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from tiny_ca import AuditLog, CAConfig, CAFileLoader, CertificateFactory
 from tiny_ca.managers.async_lifecycle_manager import AsyncCertLifecycleManager
 
 from tiny_ca_gateway.db import LocalDBHandler
@@ -55,6 +56,7 @@ class BaseCAManager(metaclass=SingletonMeta):
             API_SETTINGS.db_url,
             logger=self._logger,
         )
+        self._audit_log = self._make_audit_log()
 
     # ------------------------------------------------------------------
     # Properties
@@ -68,6 +70,26 @@ class BaseCAManager(metaclass=SingletonMeta):
     def logger(self) -> logging.Logger:
         return self._logger
 
+    @property
+    def audit_log(self) -> AuditLog | None:
+        return self._audit_log
+
+    def _make_audit_log(self) -> AuditLog | None:
+        """Build the audit log from settings, or ``None`` when disabled."""
+        if not API_SETTINGS.audit_log_path:
+            return None
+        signer = None
+        if API_SETTINGS.audit_log_key:
+            signer = load_pem_private_key(
+                Path(API_SETTINGS.audit_log_key).read_bytes(), password=None
+            )
+        return AuditLog(
+            API_SETTINGS.audit_log_path,
+            signer=signer,  # type: ignore[arg-type]
+            actor=API_SETTINGS.audit_log_actor,
+            logger=self._logger,
+        )
+
     # ------------------------------------------------------------------
     # Internal async machinery
     # ------------------------------------------------------------------
@@ -75,7 +97,9 @@ class BaseCAManager(metaclass=SingletonMeta):
     async def _rebuild_root_ca_pair(self, ca_config: CAConfig) -> None:
         """Generate a new self-signed root CA and write to disk."""
         tmp = AsyncCertLifecycleManager(
-            db_handler=self._db_handler, logger=self._logger
+            db_handler=self._db_handler,
+            logger=self._logger,
+            audit_log=self._audit_log,
         )
         ca_cert_path, ca_key_path = await tmp.create_self_signed_ca(
             config=ca_config, is_overwrite=True
@@ -88,6 +112,7 @@ class BaseCAManager(metaclass=SingletonMeta):
         """(Re-)load the CA factory from disk."""
         self._manager = AsyncCertLifecycleManager(
             db_handler=self._db_handler,
+            audit_log=self._audit_log,
             factory=CertificateFactory(
                 ca_loader=CAFileLoader(
                     ca_cert_path=API_SETTINGS.path_to_ca_cer,
@@ -95,6 +120,11 @@ class BaseCAManager(metaclass=SingletonMeta):
                     logger=self._logger,
                 ),
                 logger=self._logger,
+                crl_distribution_points=API_SETTINGS.crl_distribution_points,
+                ca_issuers_urls=API_SETTINGS.ca_issuers_urls,
+                ocsp_urls=API_SETTINGS.ocsp_urls,
+                certificate_policies=API_SETTINGS.certificate_policies,
+                cps_uri=API_SETTINGS.cps_uri,
             ),
         )
 
@@ -113,6 +143,7 @@ class BaseCAManager(metaclass=SingletonMeta):
                     common_name=self._common_name,
                     organization=self._organization,
                     country="UA",
+                    key_algorithm=API_SETTINGS.ca_key_algorithm,
                     key_size=4096,
                     days_valid=3650,
                 )

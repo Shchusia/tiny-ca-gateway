@@ -7,11 +7,12 @@ import uuid as _uuid_module
 
 import aiofiles
 from cryptography import x509
-from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
+from cryptography.hazmat.primitives.serialization import Encoding
 from django.http import HttpRequest, HttpResponse, StreamingHttpResponse
 from ninja import Router
 from ninja.errors import HttpError
 from ninja.security import HttpBearer
+from tiny_ca.exc import CertificateRevokedError
 from tiny_ca.managers.async_lifecycle_manager import AsyncCertLifecycleManager
 from tiny_ca.models.certificate import CAConfig, CertificateDetails
 
@@ -52,7 +53,16 @@ from tiny_ca_gateway.core.helpers import (
 from tiny_ca_gateway.core.helpers import (
     load_pem_crl as __load_pem_crl,
 )
-from tiny_ca_gateway.core.schemas import CRLVerifyResponse
+from tiny_ca_gateway.core.helpers import load_stored_private_key
+from tiny_ca_gateway.core.operations import (
+    certify_intermediate,
+    error_status,
+    issue_intermediate,
+)
+from tiny_ca_gateway.core.schemas import (
+    CertifyIntermediateCARequest,
+    CRLVerifyResponse,
+)
 from tiny_ca_gateway.core.summary import RoutesSummary
 from tiny_ca_gateway.django.lifespan.manager import DjangoCALifespanManager
 from tiny_ca_gateway.models import API_SETTINGS
@@ -242,17 +252,33 @@ async def issue_intermediate_ca(
     mgr = _require_factory()
     _uuid = str(_uuid_module.uuid4())
     try:
-        cert, _ = await mgr.issue_intermediate_ca(
-            common_name=payload.common_name,
-            key_size=payload.key_size,
-            days_valid=payload.days_valid,
-            path_length=payload.path_length,
-            organization=payload.organization,
-            country=payload.country,
-            uuid_str=_uuid,
-        )
+        cert = await issue_intermediate(mgr, payload, _uuid)
     except Exception as exc:
-        raise HttpError(422, str(exc)) from exc
+        raise HttpError(error_status(exc, 422), str(exc)) from exc
+    return IssueCertResponse(
+        uuid=_uuid,
+        serial_number=cert.serial_number,
+        common_name=payload.common_name,
+        not_valid_before=cert.not_valid_before_utc,
+        not_valid_after=cert.not_valid_after_utc,
+    )
+
+
+@ca_router.post(
+    Routes.CA_INTERMEDIATE_CERTIFY,
+    summary=RoutesSummary.CA_INTERMEDIATE_CERTIFY,
+    response=IssueCertResponse,
+    auth=token_auth,
+)
+async def certify_intermediate_ca(
+    request: HttpRequest, payload: CertifyIntermediateCARequest
+) -> IssueCertResponse:
+    mgr = _require_factory()
+    _uuid = str(_uuid_module.uuid4())
+    try:
+        cert = await certify_intermediate(mgr, payload, _uuid)
+    except Exception as exc:
+        raise HttpError(error_status(exc, 422), str(exc)) from exc
     return IssueCertResponse(
         uuid=_uuid,
         serial_number=cert.serial_number,
@@ -274,24 +300,17 @@ async def issue_certificate(
     mgr = _require_factory()
     _uuid = str(_uuid_module.uuid4())
     try:
-        if payload.key_size and (payload.key_size < 2048 or payload.key_size > 4096):
-            raise HttpError(
-                400, f"Invalid key_size: {payload.key_size}. Must be 2048-4096."
-            )
-
         cert, _, _ = await mgr.issue_certificate(
             config=build_client_config(payload),
             uuid_str=_uuid,
             is_overwrite=payload.is_overwrite,
         )
-    except HttpError:
-        raise
     except ValueError as exc:
         if "key" in str(exc).lower():
             raise HttpError(400, str(exc)) from exc
         raise HttpError(409, str(exc)) from exc
     except Exception as exc:
-        raise HttpError(409, str(exc)) from exc
+        raise HttpError(error_status(exc, 409), str(exc)) from exc
     return IssueCertResponse(
         uuid=_uuid,
         serial_number=cert.serial_number,
@@ -356,18 +375,10 @@ async def verify_certificate(
 ) -> VerifyResponse:
     cert = _load_pem_cert(payload.pem)
     try:
-        result = await _require_factory().verify_certificate(cert=cert)
-        if isinstance(result, tuple):
-            valid, reason = result
-            if valid:
-                return VerifyResponse(valid=True)
-            else:
-                return VerifyResponse(
-                    valid=False, detail=reason or "Verification failed"
-                )
-        return VerifyResponse(valid=True)
+        valid = await _require_factory().verify_certificate(cert=cert)
     except Exception as exc:
         return VerifyResponse(valid=False, detail=str(exc))
+    return VerifyResponse(valid=valid, detail="" if valid else "Verification failed")
 
 
 @ca_router.post(
@@ -387,7 +398,7 @@ async def cosign_certificate(
             valid_from=payload.valid_from,
         )
     except Exception as exc:
-        raise HttpError(422, str(exc)) from exc
+        raise HttpError(error_status(exc, 422), str(exc)) from exc
     return CosignResponse(
         serial_number=cosigned.serial_number,
         not_valid_before=cosigned.not_valid_before_utc,
@@ -407,8 +418,7 @@ async def export_pkcs12(
     key_path = await get_artifact_path(record.uuid, "key")
     if not key_path:
         raise HttpError(404, "Private key not found in storage")
-    async with aiofiles.open(key_path, "rb") as fh:
-        private_key = load_pem_private_key(await fh.read(), password=None)
+    private_key = await load_stored_private_key(key_path)
     p12 = await mgr.export_pkcs12(
         cert=x509.load_pem_x509_certificate(record.certificate_pem.encode()),
         private_key=private_key,
@@ -462,7 +472,7 @@ async def rotate_certificate(
             serial=serial, config=build_client_config(payload)
         )
     except Exception as exc:
-        raise HttpError(404, str(exc)) from exc
+        raise HttpError(error_status(exc, 404), str(exc)) from exc
     return RotateResponse(
         uuid=_uuid,
         serial_number=new_cert.serial_number,
@@ -483,7 +493,7 @@ async def renew_certificate(
             serial=serial, days_valid=payload.days_valid
         )
     except Exception as exc:
-        raise HttpError(404, str(exc)) from exc
+        raise HttpError(error_status(exc, 404), str(exc)) from exc
     return RenewResponse(
         old_serial=serial,
         new_serial=renewed.serial_number,
@@ -498,7 +508,11 @@ async def renew_certificate(
     auth=token_auth,
 )
 async def delete_certificate(request: HttpRequest, serial: int) -> DeleteResponse:
-    if not await _require_factory().delete_certificate(serial=serial):
+    try:
+        deleted = await _require_factory().delete_certificate(serial=serial)
+    except CertificateRevokedError as exc:
+        raise HttpError(409, str(exc)) from exc
+    if not deleted:
         raise HttpError(404, f"Certificate serial={serial} not found")
     return DeleteResponse(deleted=True, serial=serial)
 

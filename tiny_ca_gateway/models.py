@@ -12,6 +12,8 @@ import warnings
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from tiny_ca import KeyAlgorithm
+from tiny_ca.const import DEFAULT_KEY_ALGORITHM
 
 
 class ApiSettings(BaseSettings):
@@ -54,6 +56,29 @@ class ApiSettings(BaseSettings):
     # ------------------------------------------------------------------
     db_url: str = Field("sqlite+aiosqlite:///ca_demo_repository.db", alias="DB_URL_CA")
     db_url_sync: str = Field("sqlite:///ca_demo_repository.db", alias="DB_URL_CA_SYNC")
+
+    # ------------------------------------------------------------------
+    # Certificate profile
+    # ------------------------------------------------------------------
+    # Key algorithm of the root CA generated on first start.
+    ca_key_algorithm: KeyAlgorithm = DEFAULT_KEY_ALGORITHM
+    # Policy OIDs written into every issued certificate, plus an optional
+    # URI of the Certification Practice Statement.
+    certificate_policies: list[str] = []
+    cps_uri: str | None = None
+    # CRL Distribution Points / AIA caIssuers / AIA OCSP URLs.
+    crl_distribution_points: list[str] = []
+    ca_issuers_urls: list[str] = []
+    ocsp_urls: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Audit log
+    # ------------------------------------------------------------------
+    # Hash-chained JSON Lines record of every CA operation; disabled when
+    # unset.  With a PEM private key every entry is also signed.
+    audit_log_path: str | None = None
+    audit_log_key: str | None = None
+    audit_log_actor: str | None = None
 
     # ------------------------------------------------------------------
     # Misc

@@ -87,6 +87,19 @@ class Client:
     def delete(self, path):
         return self.request("DELETE", path)
 
+    def request_raw(
+        self, method: str, path: str, body: Any = None
+    ) -> tuple[int, bytes]:
+        data = json.dumps(body).encode() if body is not None else None
+        req = Request(
+            self._url(path), data=data, headers=self._headers(), method=method
+        )
+        try:
+            with urlopen(req, timeout=self.timeout) as r:
+                return r.status, r.read()
+        except HTTPError as e:
+            return e.code, e.read()
+
     def get_raw(self, path: str, params: dict | None = None) -> tuple[int, bytes]:
         url = self._url(path)
         if params:
@@ -768,6 +781,7 @@ def run_all(s: Suite):
                 "days_valid": 365,
                 "organization": "ACME Corp",
                 "country": "UA",
+                "is_overwrite": True,
             },
         )
         s.ok_2xx(code)
@@ -914,6 +928,215 @@ def run_all(s: Suite):
         assert "next_update" in body
 
     s.run("Revoke → /crl/refresh → next_update present", t_crl_has_revoked)
+
+    # ── 16. tiny-ca 1.0 features ─────────────────────────────────────────────
+    print("\n━━━━ 16. TINY-CA 1.0 ━━━━")
+
+    def _issue(cn: str, **extra) -> dict:
+        code, body = c.post(
+            "/issue",
+            {"common_name": cn, "days_valid": 30, "is_overwrite": True, **extra},
+        )
+        s.ok_2xx(code, body)
+        return body
+
+    def _inspect(serial: int) -> dict:
+        code, body = c.get(f"/inspect/{serial}")
+        s.ok_2xx(code, body)
+        return body
+
+    def t_default_key_is_ec():
+        body = _inspect(_issue("default.key.local")["serial_number"])
+        assert body["public_key_algorithm"] == "ec-secp384r1", body
+
+    s.run("POST /issue → default key is ECDSA P-384", t_default_key_is_ec)
+
+    def t_key_algorithms():
+        expected = {
+            "rsa": "rsa",
+            "ec-p256": "ec-secp256r1",
+            "ec-p384": "ec-secp384r1",
+            "ed25519": "ed25519",
+        }
+        for algorithm, name in expected.items():
+            iss = _issue(f"{algorithm}.key.local", key_algorithm=algorithm)
+            got = _inspect(iss["serial_number"])["public_key_algorithm"]
+            assert got == name, f"{algorithm}: expected {name}, got {got}"
+
+    s.run(
+        "POST /issue → key_algorithm rsa / ec-p256 / ec-p384 / ed25519",
+        t_key_algorithms,
+    )
+
+    def t_bad_key_algorithm():
+        code, _ = c.post(
+            "/issue", {"common_name": "bad.alg.local", "key_algorithm": "dsa"}
+        )
+        assert code in (400, 422), f"Expected 400/422, got {code}"
+
+    s.run("POST /issue → unknown key_algorithm → 400/422", t_bad_key_algorithm)
+
+    def t_intermediate_conflict():
+        payload = {"common_name": "Conflict Intermediate CA", "days_valid": 30}
+        code, body = c.post("/intermediate", {**payload, "is_overwrite": True})
+        s.ok_2xx(code, body)
+        code, body = c.post("/intermediate", payload)
+        s.ok(code, 409, body)
+        code, body = c.post("/intermediate", {**payload, "is_overwrite": True})
+        s.ok_2xx(code, body)
+
+    s.run(
+        "POST /intermediate → duplicate CN 409, is_overwrite 2xx",
+        t_intermediate_conflict,
+    )
+
+    def t_intermediate_name_constraints():
+        code, body = c.post(
+            "/intermediate",
+            {
+                "common_name": "Constrained Intermediate CA",
+                "days_valid": 30,
+                "is_overwrite": True,
+                "name_constraints": {
+                    "permitted_dns": ["example.com"],
+                    "permitted_ip": ["10.0.0.0/8"],
+                },
+            },
+        )
+        s.ok_2xx(code, body)
+        assert _inspect(body["serial_number"])["is_ca"] is True
+
+    s.run("POST /intermediate → with name_constraints", t_intermediate_name_constraints)
+
+    def t_intermediate_bad_name_constraints():
+        code, _ = c.post(
+            "/intermediate",
+            {
+                "common_name": "Empty Constraints CA",
+                "is_overwrite": True,
+                "name_constraints": {},
+            },
+        )
+        assert code in (400, 422), f"Expected 400/422, got {code}"
+
+    s.run(
+        "POST /intermediate → empty name_constraints → 400/422",
+        t_intermediate_bad_name_constraints,
+    )
+
+    def _csr(cn: str) -> str:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP384R1())
+        csr = (
+            x509.CertificateSigningRequestBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
+            .sign(key, hashes.SHA384())
+        )
+        return csr.public_bytes(serialization.Encoding.PEM).decode()
+
+    def t_certify_intermediate():
+        code, body = c.post(
+            "/intermediate/certify",
+            {
+                "csr": _csr("HSM Intermediate CA"),
+                "common_name": "HSM Intermediate CA",
+                "days_valid": 90,
+                "is_overwrite": True,
+            },
+        )
+        s.ok_2xx(code, body)
+        s.days_valid(body["not_valid_before"], body["not_valid_after"], 90)
+        details = _inspect(body["serial_number"])
+        assert details["is_ca"] is True
+        assert details["public_key_algorithm"] == "ec-secp384r1"
+        code, raw = _get_artifact(body["uuid"], "pem")
+        assert code == 200, f"Certificate artefact missing: {code}"
+        code, raw = _get_artifact(body["uuid"], "key")
+        assert code != 200, "No private key may be stored for a CSR"
+
+    s.run(
+        "POST /intermediate/certify → CA cert for a CSR, no key stored",
+        t_certify_intermediate,
+    )
+
+    def t_certify_bad_csr():
+        code, _ = c.post(
+            "/intermediate/certify",
+            {"csr": "not a csr", "common_name": "Bad CSR CA", "is_overwrite": True},
+        )
+        s.ok(code, 422)
+
+    s.run("POST /intermediate/certify → invalid CSR → 422", t_certify_bad_csr)
+
+    def t_renew_revoked():
+        serial = _issue("renew.revoked.local")["serial_number"]
+        c.patch("/revoke", {"serial_number": serial, "reason": "keyCompromise"})
+        code, body = c.post(f"/renew/{serial}", {"days_valid": 30})
+        s.ok(code, 409, body)
+
+    s.run("POST /renew of a revoked cert → 409", t_renew_revoked)
+
+    def t_delete_revoked():
+        serial = _issue("delete.revoked.local")["serial_number"]
+        c.patch("/revoke", {"serial_number": serial, "reason": "superseded"})
+        code, body = c.delete(f"/{serial}")
+        s.ok(code, 409, body)
+        code, body = c.get(f"/status/{serial}")
+        assert body["status"] == "revoked", body
+
+    s.run("DELETE of a revoked, unexpired cert → 409, stays revoked", t_delete_revoked)
+
+    def t_export_p12_with_password():
+        serial = _issue("p12.local")["serial_number"]
+        code, raw = c.request_raw(
+            "POST", f"/export-p12/{serial}", {"password": "s3cret"}
+        )
+        s.ok(code, 200)
+        from cryptography.hazmat.primitives.serialization import pkcs12
+
+        bundle = pkcs12.load_pkcs12(raw, b"s3cret")
+        assert bundle.cert is not None and bundle.key is not None
+
+    s.run(
+        "POST /export-p12 → encrypted bundle opens with the password",
+        t_export_p12_with_password,
+    )
+
+    def t_artifact_rejects_non_uuid():
+        for bad in (".", "..", "not-a-uuid"):
+            for prefix in ("", "/artifact", "/stream"):
+                code, raw = c.get_raw(f"{prefix}/{bad}", params={"object_type": "key"})
+                assert code != 200 or b"PRIVATE KEY" not in raw, (
+                    f"{prefix}/{bad} served a private key"
+                )
+
+    s.run(
+        "GET artefact with a non-UUID id never serves a key",
+        t_artifact_rejects_non_uuid,
+    )
+
+    def t_openapi_lists_new_routes():
+        candidates = ["/openapi.json", "/api/v1/openapi.json", "/api/openapi.json"]
+        for path in candidates:
+            try:
+                with urlopen(f"{c.base}{path}", timeout=c.timeout) as r:
+                    schema = json.loads(r.read())
+            except (HTTPError, ValueError):
+                continue
+            if isinstance(schema, dict) and "paths" in schema:
+                break
+        else:
+            assert False, f"No OpenAPI schema at {candidates}"
+        paths = list(schema["paths"])
+        assert any(p.endswith("/intermediate/certify") for p in paths), paths
+        text = json.dumps(schema)
+        assert "#/$defs/" not in text, "OpenAPI schema has unresolvable $defs refs"
+
+    s.run("GET /openapi.json → lists /intermediate/certify", t_openapi_lists_new_routes)
 
 
 # ---------------------------------------------------------------------------
