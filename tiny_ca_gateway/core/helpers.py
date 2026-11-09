@@ -3,8 +3,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+import uuid as _uuid_module
 
+import aiofiles
 from cryptography import x509
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from tiny_ca.utils.keys import PRIVATE_KEY_TYPES, PrivateKey
 
 from tiny_ca_gateway.core.schemas import (
     ArtifactType,
@@ -49,7 +53,15 @@ async def get_artifact_path(uuid: str, object_type: ArtifactType) -> Path | None
     tiny_ca stores files as ``<common_name>.<ext>`` inside a UUID folder,
     so we scan by extension rather than assuming a fixed filename.
     """
-    folder = Path(API_SETTINGS.path_to_certificates_folder) / uuid
+    try:
+        canonical = str(_uuid_module.UUID(uuid))
+    except ValueError:
+        return None
+    if canonical != uuid.lower():
+        # Only the canonical form names a storage folder; anything else
+        # ("..", ".", "urn:uuid:...") must not be joined into a path.
+        return None
+    folder = Path(API_SETTINGS.path_to_certificates_folder) / canonical
     if not folder.is_dir():
         LOGGER.debug("Artifact folder not found: %s", folder)
         return None
@@ -81,6 +93,15 @@ def load_pem_crl(pem: str) -> x509.CertificateRevocationList:
         raise ValueError(f"Invalid PEM CRL: {exc}") from exc
 
 
+async def load_stored_private_key(path: Path) -> PrivateKey:
+    """Read an unencrypted PEM private key written by tiny-ca storage."""
+    async with aiofiles.open(path, "rb") as fh:
+        key = load_pem_private_key(await fh.read(), password=None)
+    if not isinstance(key, PRIVATE_KEY_TYPES):
+        raise TypeError(f"Unsupported private key type: {type(key).__name__}")
+    return key  # type: ignore[return-value]
+
+
 # ---------------------------------------------------------------------------
 # ClientConfig builder  (issue / rotate share identical logic)
 # ---------------------------------------------------------------------------
@@ -99,6 +120,7 @@ def build_client_config(payload: IssueCertRequest) -> ClientConfig:
     return ClientConfig(
         common_name=payload.common_name,
         serial_type=CertType.SERVICE,
+        key_algorithm=payload.key_algorithm,
         key_size=payload.key_size,
         days_valid=payload.days_valid,
         valid_from=payload.valid_from,

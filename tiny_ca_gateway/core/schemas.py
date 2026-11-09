@@ -5,6 +5,8 @@ from typing import Literal
 
 from cryptography import x509 as _x509
 from pydantic import BaseModel, Field
+from tiny_ca import KeyAlgorithm, NameConstraintsConfig
+from tiny_ca.const import DEFAULT_KEY_ALGORITHM
 
 # ---------------------------------------------------------------------------
 # Reason map
@@ -120,16 +122,49 @@ class RotateResponse(BaseModel):
 
 class IntermediateCARequest(BaseModel):
     common_name: str
-    key_size: int = Field(default=4096, ge=2048, le=8192)
+    key_algorithm: KeyAlgorithm = Field(
+        default=DEFAULT_KEY_ALGORITHM,
+        description="rsa | ec-p256 | ec-p384 | ed25519",
+    )
+    key_size: int = Field(
+        default=4096, ge=2048, le=8192, description="RSA key size; ignored for EC."
+    )
     days_valid: int = Field(default=1825, ge=1, le=36500)
     path_length: int | None = 0
     organization: str | None = None
     country: str | None = "UA"
+    name_constraints: NameConstraintsConfig | None = Field(
+        default=None,
+        description="Permitted / excluded DNS, IP and e-mail subtrees (RFC 5280).",
+    )
+    is_overwrite: bool = False
+
+
+class CertifyIntermediateCARequest(BaseModel):
+    csr: str = Field(
+        description=(
+            "PEM-encoded CSR of the subordinate CA. Its private key stays "
+            "with the requester (e.g. in an HSM) and is never sent here."
+        )
+    )
+    common_name: str
+    days_valid: int = Field(default=1825, ge=1, le=36500)
+    path_length: int | None = 0
+    organization: str | None = None
+    country: str | None = "UA"
+    name_constraints: NameConstraintsConfig | None = None
+    is_overwrite: bool = False
 
 
 class IssueCertRequest(BaseModel):
     common_name: str
-    key_size: int = Field(default=2048, ge=1024, le=8192)
+    key_algorithm: KeyAlgorithm = Field(
+        default=DEFAULT_KEY_ALGORITHM,
+        description="rsa | ec-p256 | ec-p384 | ed25519",
+    )
+    key_size: int = Field(
+        default=3072, ge=2048, le=8192, description="RSA key size; ignored for EC."
+    )
     days_valid: int = Field(default=365, ge=1, le=36500)
     valid_from: datetime.datetime | None = None
     email: str | None = None

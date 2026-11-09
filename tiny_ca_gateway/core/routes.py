@@ -13,6 +13,7 @@ class Routes(StrEnum):
     # CA bootstrap
     CA_ROOT = "/root"
     CA_INTERMEDIATE = "/intermediate"
+    CA_INTERMEDIATE_CERTIFY = "/intermediate/certify"
 
     # Issuance
     ISSUE = "/issue"

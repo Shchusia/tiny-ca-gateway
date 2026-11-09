@@ -11,6 +11,86 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.0.0] — 2026-11-09
+
+Upgrade to **tiny-ca 1.0** and current framework releases.
+
+### Added
+
+- `POST /intermediate/certify` — issue an intermediate CA certificate for the
+  key in a PEM CSR, so the subordinate CA key can stay in an HSM; only the
+  certificate is stored.
+- `name_constraints` on `POST /intermediate` (permitted / excluded DNS, IP and
+  e-mail subtrees, RFC 5280) and `is_overwrite` to re-issue an intermediate CA
+  with the same common name.
+- `key_algorithm` (`rsa`, `ec-p256`, `ec-p384`, `ed25519`) on `/issue`,
+  `/rotate` and `/intermediate`.
+- Settings: `CA_KEY_ALGORITHM` for the root CA created on first start;
+  `CERTIFICATE_POLICIES` and `CPS_URI`; `CRL_DISTRIBUTION_POINTS`,
+  `CA_ISSUERS_URLS` and `OCSP_URLS`; `AUDIT_LOG_PATH`, `AUDIT_LOG_KEY` and
+  `AUDIT_LOG_ACTOR` for tiny-ca's hash-chained, signed audit log.
+- `tiny_ca_gateway.core.operations` — intermediate CA operations and the
+  exception → HTTP status mapping shared by all adapters.
+- `scripts/run_all_tests.sh` — runs the integration suite against all nine
+  server modes, verifies each server's signed audit log, and with
+  `COVERAGE=1` measures coverage; `task coverage` and `task coverage-upload`
+  (Coveralls).
+- Integration tests for the new endpoints, key algorithms, 409 / 422 error
+  mapping, PKCS#12 export with a password, artefact ids and the OpenAPI schema
+  (71 tests per server mode).
+- Download badges (pepy.tech) and a Coveralls badge in the README.
+- Python 3.14 and 3.15 support.
+
+### Changed
+
+- Requires `tiny-ca[async]>=1.0.0`, FastAPI ≥ 0.162.2, uvicorn ≥ 0.54.0,
+  Django ≥ 6.1.3, Django Ninja ≥ 1.8.0, aiohttp ≥ 3.14.5, gunicorn ≥ 26.2.0,
+  pydantic ≥ 2.14.3, pydantic-settings ≥ 2.16.2, aiofiles ≥ 25.1.0.
+- New keys are ECDSA P-384 by default (was RSA-2048 for leaves, RSA-4096 for
+  CAs); `key_size` (RSA only) defaults to 3072 for leaves and must be
+  2048–8192 (422 outside that range, was a 400 for anything above 4096).
+- Error statuses are the same in every adapter: 409 for renewing or
+  co-signing a revoked certificate, deleting a revoked unexpired certificate
+  and duplicate common names; 422 for name-constraint violations.
+- `POST /verify` reports the result returned by tiny-ca instead of assuming
+  success when no exception is raised.
+- The OpenAPI schema served by the Flask and aiohttp adapters uses shared
+  component definitions, describes the `POST /root` body as `CAConfig` (was
+  the response model) and lists the new endpoint.
+- `task run-all-tests` uses `scripts/run_all_tests.sh`; the previous inline
+  script never stopped the servers (go-task's shell returned a job id instead
+  of a PID for `$!`) and hung after the first backend.
+
+### Security
+
+- Artefact downloads (`/{uuid}`, `/stream/{uuid}`, Django `/artifact/{uuid}`)
+  accept only a canonical UUID.  An id such as `.` resolved to the
+  certificates folder itself, so `GET /.?object_type=key` could return the
+  root CA private key `certs/ca.key` to any token holder.
+- Bearer tokens are compared in constant time in every adapter.
+
+### Fixed
+
+- Environment variable names in the README and framework guides
+  (`CA_CER`, `CA_KEY`, `PATH_TO_CRL`, `PATH_TO_CERTIFICATES_FOLDER`,
+  `DB_URL_CA`, `API_TOKEN`); the documented `CA_CERT_PATH`, `CA_DB_URL`,
+  `CA_API_TOKEN`, … were never read.  The guides now set them before
+  importing the gateway, which reads its settings at import time.
+
+### Breaking changes
+
+- tiny-ca 1.0 is required; see its changelog for the library-level changes.
+- Default key algorithm is ECDSA P-384.  Clients that need RSA must send
+  `"key_algorithm": "rsa"`.
+- `key_size` below 2048 or above 8192 is rejected by request validation.
+- `POST /intermediate` with the common name of an existing intermediate CA
+  returns 409 unless `"is_overwrite": true` is sent.
+- Renew / co-sign of a revoked certificate and deletion of a revoked,
+  unexpired certificate return 409.
+- Artefact ids that are not canonical UUIDs return 404.
+
+---
+
 ## [0.1.0] — 2025-05-06
 
 Initial public release.
@@ -106,5 +186,6 @@ Initial public release.
 
 ---
 
-[Unreleased]: https://github.com/yourorg/tiny-ca-gateway/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/yourorg/tiny-ca-gateway/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Shchusia/tiny-ca-gateway/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Shchusia/tiny-ca-gateway/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/Shchusia/tiny-ca-gateway/releases/tag/v0.1.0

@@ -19,6 +19,7 @@ class RoutesSummary(StrEnum):
     MAINTENANCE_EXPIRE = "Bulk-mark expired certificates"
     ISSUE = "Issue leaf certificate"
     CA_INTERMEDIATE = "Issue intermediate CA certificate"
+    CA_INTERMEDIATE_CERTIFY = "Certify an intermediate CA from its CSR (HSM-held key)"
     CA_ROOT = "Bootstrap self-signed root CA"
     GET_LIST_EXPIRING_CERTS = "Certificates expiring soon"
     GET_LIST_CERTS = "List certificates"

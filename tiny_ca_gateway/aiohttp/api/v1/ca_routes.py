@@ -8,8 +8,9 @@ import uuid as _uuid_module
 import aiofiles
 from aiohttp import web
 from cryptography import x509
-from cryptography.hazmat.primitives.serialization import Encoding, load_pem_private_key
+from cryptography.hazmat.primitives.serialization import Encoding
 from pydantic import BaseModel, ValidationError
+from tiny_ca.exc import CertificateRevokedError
 from tiny_ca.managers.async_lifecycle_manager import AsyncCertLifecycleManager
 from tiny_ca.models.certificate import CAConfig
 
@@ -29,7 +30,18 @@ from tiny_ca_gateway.core import (
     get_artifact_path,
     record_to_item,
 )
-from tiny_ca_gateway.core.helpers import load_pem_cert, load_pem_crl
+from tiny_ca_gateway.core.auth import auth_enabled, check_token, extract_bearer
+from tiny_ca_gateway.core.helpers import (
+    load_pem_cert,
+    load_pem_crl,
+    load_stored_private_key,
+)
+from tiny_ca_gateway.core.operations import (
+    certify_intermediate,
+    error_status,
+    issue_intermediate,
+)
+from tiny_ca_gateway.core.schemas import CertifyIntermediateCARequest
 from tiny_ca_gateway.models import API_SETTINGS
 
 routes = web.RouteTableDef()
@@ -51,11 +63,9 @@ def _require_factory() -> AsyncCertLifecycleManager:
 
 
 def _verify_token(request: web.Request) -> None:
-    expected = getattr(API_SETTINGS, "api_token", None)
-    if not expected:
+    if not auth_enabled():
         return
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != expected:
+    if not check_token(extract_bearer(request.headers.get("Authorization"))):
         raise web.HTTPUnauthorized(
             content_type="application/json",
             text='{"detail": "Invalid or missing bearer token."}',
@@ -239,17 +249,30 @@ async def issue_intermediate_ca(request: web.Request) -> web.Response:
     payload = await _parse(request, IntermediateCARequest)
     _uuid = str(_uuid_module.uuid4())
     try:
-        cert, _ = await mgr.issue_intermediate_ca(
-            common_name=payload.common_name,
-            key_size=payload.key_size,
-            days_valid=payload.days_valid,
-            path_length=payload.path_length,
-            organization=payload.organization,
-            country=payload.country,
-            uuid_str=_uuid,
-        )
+        cert = await issue_intermediate(mgr, payload, _uuid)
     except Exception as exc:
-        return _err(str(exc), 422)
+        return _err(str(exc), error_status(exc, 422))
+    return _resp(
+        {
+            "uuid": _uuid,
+            "serial_number": cert.serial_number,
+            "common_name": payload.common_name,
+            "not_valid_before": cert.not_valid_before_utc.isoformat(),
+            "not_valid_after": cert.not_valid_after_utc.isoformat(),
+        }
+    )
+
+
+@routes.post(Routes.CA_INTERMEDIATE_CERTIFY)
+async def certify_intermediate_ca(request: web.Request) -> web.Response:
+    _verify_token(request)
+    mgr = _require_factory()
+    payload = await _parse(request, CertifyIntermediateCARequest)
+    _uuid = str(_uuid_module.uuid4())
+    try:
+        cert = await certify_intermediate(mgr, payload, _uuid)
+    except Exception as exc:
+        return _err(str(exc), error_status(exc, 422))
     return _resp(
         {
             "uuid": _uuid,
@@ -274,7 +297,10 @@ async def issue_certificate(request: web.Request) -> web.Response:
             is_overwrite=payload.is_overwrite,
         )
     except Exception as exc:
-        return _err(str(exc), 409)
+        status = error_status(exc, 409)
+        if isinstance(exc, ValueError) and "key" in str(exc).lower():
+            status = 400
+        return _err(str(exc), status)
     return _resp(
         {
             "uuid": _uuid,
@@ -330,10 +356,10 @@ async def verify_certificate(request: web.Request) -> web.Response:
     _verify_token(request)
     cert = _load_pem_cert((await _parse(request, VerifyRequest)).pem)
     try:
-        await _require_factory().verify_certificate(cert=cert)
-        return _resp({"valid": True})
+        valid = await _require_factory().verify_certificate(cert=cert)
     except Exception as exc:
         return _resp({"valid": False, "detail": str(exc)})
+    return _resp({"valid": valid, "detail": "" if valid else "Verification failed"})
 
 
 @routes.post(Routes.COSIGN)
@@ -348,7 +374,7 @@ async def cosign_certificate(request: web.Request) -> web.Response:
             valid_from=payload.valid_from,
         )
     except Exception as exc:
-        return _err(str(exc), 422)
+        return _err(str(exc), error_status(exc, 422))
     return _resp(
         {
             "serial_number": cosigned.serial_number,
@@ -371,8 +397,7 @@ async def export_pkcs12(request: web.Request) -> web.Response:
     key_path = await get_artifact_path(record.uuid, "key")
     if not key_path:
         return _err("Private key not found in storage", 404)
-    async with aiofiles.open(key_path, "rb") as fh:
-        private_key = load_pem_private_key(await fh.read(), password=None)
+    private_key = await load_stored_private_key(key_path)
     p12 = await mgr.export_pkcs12(
         cert=x509.load_pem_x509_certificate(record.certificate_pem.encode()),
         private_key=private_key,
@@ -415,7 +440,7 @@ async def rotate_certificate(request: web.Request) -> web.Response:
             serial=serial, config=build_client_config(payload)
         )
     except Exception as exc:
-        return _err(str(exc), 404)
+        return _err(str(exc), error_status(exc, 404))
     return _resp(
         {
             "uuid": _uuid,
@@ -437,7 +462,7 @@ async def renew_certificate(request: web.Request) -> web.Response:
             serial=serial, days_valid=payload.days_valid
         )
     except Exception as exc:
-        return _err(str(exc), 404)
+        return _err(str(exc), error_status(exc, 404))
     return _resp(
         {
             "old_serial": serial,
@@ -451,7 +476,11 @@ async def renew_certificate(request: web.Request) -> web.Response:
 async def delete_certificate(request: web.Request) -> web.Response:
     _verify_token(request)
     serial = int(request.match_info["serial"])
-    if not await _require_factory().delete_certificate(serial=serial):
+    try:
+        deleted = await _require_factory().delete_certificate(serial=serial)
+    except CertificateRevokedError as exc:
+        return _err(str(exc), 409)
+    if not deleted:
         return _err(f"Certificate serial={serial} not found", 404)
     return _resp({"deleted": True, "serial": serial})
 
