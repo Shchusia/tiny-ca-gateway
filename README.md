@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/tiny_ca_gateway)](https://pypi.org/project/tiny-ca-gateway/)
 [![Downloads](https://static.pepy.tech/badge/tiny-ca-gateway)](https://pepy.tech/projects/tiny-ca-gateway)
 [![Downloads/month](https://static.pepy.tech/badge/tiny-ca-gateway/month)](https://pepy.tech/projects/tiny-ca-gateway)
-[![Coverage Status](https://coveralls.io/repos/github/Shchusia/tiny-ca-gateway/badge.svg)](https://coveralls.io/github/Shchusia/tiny-ca-gateway)
+[![Coverage Status](https://coveralls.io/repos/github/Shchusia/tiny-ca-gateway/badge.svg?branch=master)](https://coveralls.io/github/Shchusia/tiny-ca-gateway?branch=master)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **tiny-ca-gateway** provides ready-to-use REST API routes for  [tiny-ca](https://github.com/Shchusia/tiny_ca) — a lightweight Python Certificate Authority library. Mount a full-featured CA HTTP API into any of your existing applications in minutes.
@@ -37,6 +37,8 @@
 ---
 
 ## Quick install
+
+Requires Python 3.12 or higher (tested on 3.12 – 3.15) and tiny-ca 1.0.
 
 Install only what you need:
 
@@ -234,7 +236,7 @@ task coverage
 COVERALLS_REPO_TOKEN=... task coverage-upload
 ```
 
-Tested on Python 3.12, 3.14 and 3.15 with FastAPI 0.162, Flask 3.1,
+Tested on Python 3.12, 3.13, 3.14 and 3.15 with FastAPI 0.162, Flask 3.1,
 aiohttp 3.14 and Django 6.1 / Django Ninja 1.8.
 
 ---
