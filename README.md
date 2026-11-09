@@ -38,6 +38,8 @@
 
 ## Quick install
 
+Requires Python 3.12 or higher (tested on 3.12 – 3.15) and tiny-ca 1.0.
+
 Install only what you need:
 
 ```bash
@@ -234,7 +236,7 @@ task coverage
 COVERALLS_REPO_TOKEN=... task coverage-upload
 ```
 
-Tested on Python 3.12, 3.14 and 3.15 with FastAPI 0.162, Flask 3.1,
+Tested on Python 3.12, 3.13, 3.14 and 3.15 with FastAPI 0.162, Flask 3.1,
 aiohttp 3.14 and Django 6.1 / Django Ninja 1.8.
 
 ---

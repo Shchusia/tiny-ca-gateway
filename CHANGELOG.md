@@ -39,7 +39,7 @@ Upgrade to **tiny-ca 1.0** and current framework releases.
   mapping, PKCS#12 export with a password, artefact ids and the OpenAPI schema
   (71 tests per server mode).
 - Download badges (pepy.tech) and a Coveralls badge in the README.
-- Python 3.14 and 3.15 support.
+- Python 3.14 and 3.15 support (tested on 3.12 – 3.15).
 
 ### Changed
 
